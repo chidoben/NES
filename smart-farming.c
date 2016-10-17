@@ -45,19 +45,31 @@
 #include <stdio.h>
 
 static struct collect_conn tc;
-
+static process_event_t event_data_ready;////////////////
 /*---------------------------------------------------------------------------*/
-PROCESS(smart_farming_process, "Smart Farming Process");
-AUTOSTART_PROCESSES(&smart_farming_process);
+PROCESS(smart_farming_process, "Smart Farming Process");PROCESS(print_process, "Print process");//////////////
+AUTOSTART_PROCESSES(&smart_farming_process, &print_process);
 /*---------------------------------------------------------------------------*/
 static void recv(const linkaddr_t *originator, uint8_t seqno, uint8_t hops) {
-	printf("Sink got message from %d.%d, seqno %d, hops %d, '%s'\n",
-			originator->u8[0], originator->u8[1], seqno, hops, (char *) packetbuf_dataptr());
+static int *node_ID_recv;
+node_ID_recv = (int *)packetbuf_dataptr();
+	printf("Sink got message from %d.%d, seqno %d, hops %d\nTemperature = %dC\nHumidity = %d%\nLight = %dlux\n",
+			originator->u8[0], originator->u8[1], seqno, hops, *node_ID_recv, *(node_ID_recv+1), *(node_ID_recv+2));
 	
 	//TODO
 	//Get the sensor data from packetbuf_dataptr() and do a comparison, if the value is greater than a
 	//certain threshold then print a message that says that the canopy for covering the crops has been activated.
 	//E.g if humidity.value > 100 => activate canopy
+static int node_ID_trigger[] = {0,0,0};
+if(*(node_ID_recv+2)>80)
+{
+node_ID_trigger[0] = originator->u8[0];
+node_ID_trigger[1] = originator->u8[1];
+node_ID_trigger[2] = *(node_ID_recv+2);
+event_data_ready = process_alloc_event();//////////////////
+process_post(&print_process, event_data_ready, node_ID_trigger);//////////////////
+}
+
 }
 /*---------------------------------------------------------------------------*/
 static const struct collect_callbacks callbacks = { recv };
@@ -81,7 +93,7 @@ PROCESS_THREAD(smart_farming_process, ev, data) {
 		printf("Node %d is the sink node", node_id);
 		collect_set_sink(&tc, 1);
 	}
-
+	static int node_ID[] = {0,0,0};/////////////////////////////////*********
 	/* Allow some time for the network to settle. */
 	etimer_set(&et, 10 * CLOCK_SECOND);
 	PROCESS_WAIT_UNTIL(etimer_expired(&et));
@@ -91,7 +103,7 @@ PROCESS_THREAD(smart_farming_process, ev, data) {
 		/* Send a packet every 30 seconds. */
 		if (etimer_expired(&periodic)) {
 			etimer_set(&periodic, CLOCK_SECOND * 30);
-			etimer_set(&et, random_rand() % (CLOCK_SECOND * 30));
+			etimer_set(&et, (random_rand() % (CLOCK_SECOND * 30))+CLOCK_SECOND *10);
 		}
 
 		PROCESS_WAIT_EVENT()
@@ -121,11 +133,15 @@ PROCESS_THREAD(smart_farming_process, ev, data) {
 			}
 
 			packetbuf_clear();
-			packetbuf_set_datalen(sprintf(packetbuf_dataptr(), "\nTemperature=%d.%02u C (%d)\n Humidity=%d.%02u %% (%d)\n Light=%d.%02u lux (%d)\n",
-					dec1,(unsigned int) (frac1 * 100), val1,
-                    dec2,(unsigned int) (frac2 * 100), val2,
-					dec3,(unsigned int) (frac3 * 100), val3) + 1);
-			collect_send(&tc, 15);
+			//packetbuf_set_datalen(sprintf(packetbuf_dataptr(), "\nTemperature=%d.%02u C (%d)\n Humidity=%d.%02u %% (%d)\n Light=%d.%02u lux (%d)\n",
+			//		dec1,(unsigned int) (frac1 * 100), val1,
+                    	//		dec2,(unsigned int) (frac2 * 100), val2,
+			//		dec3,(unsigned int) (frac3 * 100), val3) + 1);
+				    	node_ID[0] = dec1;
+	   				node_ID[1] = dec2;
+					node_ID[2] = dec3;
+					packetbuf_copyfrom(node_ID, sizeof(node_ID));
+			collect_send(&tc, sizeof(tc));
 		}
 
 	}
@@ -134,3 +150,21 @@ PROCESS_THREAD(smart_farming_process, ev, data) {
 PROCESS_END();
 }
 /*---------------------------------------------------------------------------*/
+/* Implementation of the second process */
+ PROCESS_THREAD(print_process, ev, data)
+ {
+     PROCESS_BEGIN();
+
+     while (1)
+     {
+         // wait until we get a data_ready event
+        PROCESS_WAIT_EVENT_UNTIL(ev == event_data_ready);
+	static *data_recv;
+	data_recv = (int*)data;
+         // display it
+        printf("Send message to %d.%d\n because Light = %dlux\n", *data_recv, *(data_recv+1), *(data_recv+2));
+
+    }
+     PROCESS_END();
+ }
+ /*---------------------------------------------------------------------------*/
