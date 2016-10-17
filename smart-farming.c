@@ -39,37 +39,47 @@
 #include "dev/sht11/sht11-sensor.h"
 #include "dev/light-sensor.h"
 #include "node-id.h"
-
+#include "net/rime/trickle.h"
 #include "net/netstack.h"
 
 #include <stdio.h>
 
 static struct collect_conn tc;
-static process_event_t event_data_ready;////////////////
+static process_event_t event_data_ready;
 /*---------------------------------------------------------------------------*/
-PROCESS(smart_farming_process, "Smart Farming Process");PROCESS(print_process, "Print process");//////////////
-AUTOSTART_PROCESSES(&smart_farming_process, &print_process);
+PROCESS(smart_farming_process, "Smart Farming Process");PROCESS(shutter_process, "Shutter process");
+AUTOSTART_PROCESSES(&smart_farming_process, &shutter_process);
 /*---------------------------------------------------------------------------*/
 static void recv(const linkaddr_t *originator, uint8_t seqno, uint8_t hops) {
 static int *node_ID_recv;
+static  int shutter_array[20];// store information of open shutters
 node_ID_recv = (int *)packetbuf_dataptr();
-	printf("Sink got message from %d.%d, seqno %d, hops %d\nTemperature = %dC\nHumidity = %d%\nLight = %dlux\n",
+	printf("\nSink got message from %d.%d, seqno %d, hops %d\nTemperature = %dC\nHumidity = %d%\nLight = %dlux\n",
 			originator->u8[0], originator->u8[1], seqno, hops, *node_ID_recv, *(node_ID_recv+1), *(node_ID_recv+2));
 	
 	//TODO
 	//Get the sensor data from packetbuf_dataptr() and do a comparison, if the value is greater than a
 	//certain threshold then print a message that says that the canopy for covering the crops has been activated.
 	//E.g if humidity.value > 100 => activate canopy
-static int node_ID_trigger[] = {0,0,0};
-if(*(node_ID_recv+2)>80)
-{
-node_ID_trigger[0] = originator->u8[0];
-node_ID_trigger[1] = originator->u8[1];
-node_ID_trigger[2] = *(node_ID_recv+2);
-event_data_ready = process_alloc_event();//////////////////
-process_post(&print_process, event_data_ready, node_ID_trigger);//////////////////
-}
-
+	static int node_ID_trigger[] = {0,0,0};
+		if(*(node_ID_recv+2) >= 80)		//testing with light threshold = 80lux******change this value in "shutter_process" also
+		{
+			node_ID_trigger[0] = originator->u8[0];
+			node_ID_trigger[1] = originator->u8[1];
+			node_ID_trigger[2] = *(node_ID_recv+2);
+			shutter_array[originator->u8[0]] = 1;	// setting the FLAG to 1 for a particular node when its shutter is about to be closed
+			event_data_ready = process_alloc_event();
+			process_post(&shutter_process, event_data_ready, node_ID_trigger);
+		}
+		else if(*(node_ID_recv+2) < 80 && shutter_array[originator->u8[0]] == 1)
+		{
+			node_ID_trigger[0] = originator->u8[0];
+			node_ID_trigger[1] = originator->u8[1];
+			node_ID_trigger[2] = *(node_ID_recv+2);
+			shutter_array[originator->u8[0]] = 0;	// re-setting the FLAG for a particular node when its shutter is about to be opened
+			event_data_ready = process_alloc_event();
+			process_post(&shutter_process, event_data_ready, node_ID_trigger);
+		}
 }
 /*---------------------------------------------------------------------------*/
 static const struct collect_callbacks callbacks = { recv };
@@ -150,11 +160,34 @@ PROCESS_THREAD(smart_farming_process, ev, data) {
 PROCESS_END();
 }
 /*---------------------------------------------------------------------------*/
+static void
+trickle_recv(struct trickle_conn *c)
+{
+static int node_ID_act_shutter = 0; 
+static int *node_ID_recv; 
+node_ID_recv = (int *)packetbuf_dataptr();
+if(*node_ID_recv == linkaddr_node_addr.u8[0] && *(node_ID_recv+1) == linkaddr_node_addr.u8[1] && node_ID_act_shutter == 0)
+{
+  printf("Close shutter at %d.%d\n",
+	 *node_ID_recv, *(node_ID_recv+1));
+	node_ID_act_shutter = 1;
+}
+else if(*node_ID_recv == linkaddr_node_addr.u8[0] && *(node_ID_recv+1) == linkaddr_node_addr.u8[1] && node_ID_act_shutter == 1)
+{
+  printf("Open shutter at %d.%d\n",
+	 *node_ID_recv, *(node_ID_recv+1));
+	node_ID_act_shutter = 0;
+}
+}
+const static struct trickle_callbacks trickle_call = {trickle_recv};
+static struct trickle_conn trickle;
+/*---------------------------------------------------------------------------*/
 /* Implementation of the second process */
- PROCESS_THREAD(print_process, ev, data)
- {
+ PROCESS_THREAD(shutter_process, ev, data)
+ {   PROCESS_EXITHANDLER(trickle_close(&trickle);)
      PROCESS_BEGIN();
-
+     trickle_open(&trickle, CLOCK_SECOND, 145, &trickle_call);
+     static int shutter_status[20];
      while (1)
      {
          // wait until we get a data_ready event
@@ -162,8 +195,32 @@ PROCESS_END();
 	static *data_recv;
 	data_recv = (int*)data;
          // display it
-        printf("Send message to %d.%d\n because Light = %dlux\n", *data_recv, *(data_recv+1), *(data_recv+2));
-
+	if(*data_recv != 1 && shutter_status[*data_recv] == 0 && *(data_recv+2) >= 80)
+        {
+		printf("Send message to %d.%d to close shutter because Light intensity = %dlux\n", *data_recv, *(data_recv+1), *(data_recv+2));
+		shutter_status[*data_recv] = 1;
+		//*(data_recv+2) = 1;
+		packetbuf_copyfrom(data_recv, sizeof(data_recv));
+	    	trickle_send(&trickle);
+	}
+	else if(*data_recv != 1 && shutter_status[*data_recv] == 1 && *(data_recv+2) < 80)
+        {
+		printf("Send message to %d.%d to open shutter because Light intensity has reduced to %dlux\n", *data_recv, *(data_recv+1), *(data_recv+2));
+		shutter_status[*data_recv] = 0;
+		//*(data_recv+2) = 0;
+		packetbuf_copyfrom(data_recv, sizeof(data_recv));
+	    	trickle_send(&trickle);
+	}	
+	else if(*data_recv == 1 && shutter_status[1] == 0 && *(data_recv+2) >= 80) // close shutter at PAN
+	{
+		printf("Close shutter at %d.%d\n",*data_recv, *(data_recv+1) && *(data_recv+2) >= 80);
+		shutter_status[1] = 1;
+	}
+	else if(*data_recv == 1 && shutter_status[1] == 1 && *(data_recv+2) < 80) // open shutter at PAN
+	{
+		printf("Open shutter at %d.%d\n",*data_recv, *(data_recv+1));
+		shutter_status[1] = 0;
+	}
     }
      PROCESS_END();
  }
