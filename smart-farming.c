@@ -53,6 +53,11 @@ AUTOSTART_PROCESSES(&smart_farming_process);
 static void recv(const linkaddr_t *originator, uint8_t seqno, uint8_t hops) {
 	printf("Sink got message from %d.%d, seqno %d, hops %d, '%s'\n",
 			originator->u8[0], originator->u8[1], seqno, hops, (char *) packetbuf_dataptr());
+	
+	//TODO
+	//Get the sensor data from packetbuf_dataptr() and do a comparison, if the value is greater than a
+	//certain threshold then print a message that says that the canopy for covering the crops has been activated.
+	//E.g if humidity.value > 100 => activate canopy
 }
 /*---------------------------------------------------------------------------*/
 static const struct collect_callbacks callbacks = { recv };
