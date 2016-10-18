@@ -36,7 +36,8 @@
 #include "net/rime/collect.h"
 #include "dev/leds.h"
 #include "dev/button-sensor.h"
-#include "dev/sht11/sht11-sensor.h"
+#include "dev/temperature-sensor.h"
+#include "dev/sht11-sensor.h"
 #include "dev/light-sensor.h"
 #include "node-id.h"
 #include "net/rime/trickle.h"
@@ -61,21 +62,25 @@ node_ID_recv = (int *)packetbuf_dataptr();
 	//Get the sensor data from packetbuf_dataptr() and do a comparison, if the value is greater than a
 	//certain threshold then print a message that says that the canopy for covering the crops has been activated.
 	//E.g if humidity.value > 100 => activate canopy
-	static int node_ID_trigger[] = {0,0,0};
-		if(*(node_ID_recv+2) >= 80)		//testing with light threshold = 80lux******change this value in "shutter_process" also
+	static int node_ID_trigger[] = {0,0,0,0,0};
+		if(*(node_ID_recv+2) >= 80 ||  *node_ID_recv >= 29 || *(node_ID_recv+1) >= 110)		//testing with light threshold = 80lux******change this value in "shutter_process" also
 		{
 			node_ID_trigger[0] = originator->u8[0];
 			node_ID_trigger[1] = originator->u8[1];
-			node_ID_trigger[2] = *(node_ID_recv+2);
+			node_ID_trigger[2] = (*node_ID_recv >= 29) ? 1 : 0; //*(node_ID_recv+2);
+			node_ID_trigger[3] = (*(node_ID_recv+1) >= 100) ? 1 : 0;
+			node_ID_trigger[4] = (*(node_ID_recv+2) >= 80) ? 1 : 0;
 			shutter_array[originator->u8[0]] = 1;	// setting the FLAG to 1 for a particular node when its shutter is about to be closed
 			event_data_ready = process_alloc_event();
 			process_post(&shutter_process, event_data_ready, node_ID_trigger);
 		}
-		else if(*(node_ID_recv+2) < 80 && shutter_array[originator->u8[0]] == 1)
+		else if((*(node_ID_recv+2) < 80 &&  *node_ID_recv < 29 && *(node_ID_recv+1) < 110) && shutter_array[originator->u8[0]] == 1)
 		{
 			node_ID_trigger[0] = originator->u8[0];
 			node_ID_trigger[1] = originator->u8[1];
-			node_ID_trigger[2] = *(node_ID_recv+2);
+			node_ID_trigger[2] = (*node_ID_recv >= 29) ? 1 : 0; //*(node_ID_recv+2);
+			node_ID_trigger[3] = (*(node_ID_recv+1) >= 100) ? 1 : 0;
+			node_ID_trigger[4] = (*(node_ID_recv+2) >= 80) ? 1 : 0;
 			shutter_array[originator->u8[0]] = 0;	// re-setting the FLAG for a particular node when its shutter is about to be opened
 			event_data_ready = process_alloc_event();
 			process_post(&shutter_process, event_data_ready, node_ID_trigger);
@@ -100,41 +105,37 @@ PROCESS_THREAD(smart_farming_process, ev, data) {
 	collect_open(&tc, 130, COLLECT_ROUTER, &callbacks);
 
 	if (linkaddr_node_addr.u8[0] == 1 && linkaddr_node_addr.u8[1] == 0) {
-		printf("Node %d is the sink node", node_id);
+		printf("Node %d is the sink node\n", node_id);
 		collect_set_sink(&tc, 1);
 	}
-	static int node_ID[] = {0,0,0};/////////////////////////////////*********
+	static int node_ID[] = {0,0,0};
 	/* Allow some time for the network to settle. */
 	etimer_set(&et, 10 * CLOCK_SECOND);
 	PROCESS_WAIT_UNTIL(etimer_expired(&et));
 
 	while (1) {
-
+		etimer_set(&periodic, CLOCK_SECOND * 30);	
 		/* Send a packet every 30 seconds. */
-		if (etimer_expired(&periodic)) {
-			etimer_set(&periodic, CLOCK_SECOND * 30);
-			etimer_set(&et, (random_rand() % (CLOCK_SECOND * 30))+CLOCK_SECOND *10);
-		}
+		PROCESS_WAIT_UNTIL(etimer_expired(&periodic));
+		
+							//initial delay so that all nodes are initialized
+		etimer_set(&et, (random_rand() % (CLOCK_SECOND * 30)));	
+		
 
-		PROCESS_WAIT_EVENT()
-		;
+		PROCESS_WAIT_EVENT();
 
 		if (etimer_expired(&et)) {
 			val1 = sht11_sensor.value(SHT11_SENSOR_TEMP);
-			if (val1 != -1) {
+			
 				s1 = ((0.01 * val1) - 39.60);
-				dec1 = s1;
+				dec1 = s1 +  (random_rand() % 7);
 				frac1 = s1 - dec1;
-			}
-
 			val2 = sht11_sensor.value(SHT11_SENSOR_HUMIDITY);
-			if (val2 != -1) {
+			
 				s2 = (((0.0405 * val2) - 4)
 						+ ((-2.8 * 0.000001) * (pow(val2, 2))));
-				dec2 = s2;
+				dec2 = s2 - 66 + (random_rand() % 67);//randomize humidity
 				frac2 = s2 - dec2;
-			}
-
 			val3 = light_sensor.value(LIGHT_SENSOR_TOTAL_SOLAR);
 			if (val3 != -1) {
 				s3 = (float) (val3 * 0.4071);
@@ -182,7 +183,7 @@ else if(*node_ID_recv == linkaddr_node_addr.u8[0] && *(node_ID_recv+1) == linkad
 const static struct trickle_callbacks trickle_call = {trickle_recv};
 static struct trickle_conn trickle;
 /*---------------------------------------------------------------------------*/
-/* Implementation of the second process */
+/* Implementation of the shutter process */
  PROCESS_THREAD(shutter_process, ev, data)
  {   PROCESS_EXITHANDLER(trickle_close(&trickle);)
      PROCESS_BEGIN();
@@ -195,31 +196,45 @@ static struct trickle_conn trickle;
 	static *data_recv;
 	data_recv = (int*)data;
          // display it
-	if(*data_recv != 1 && shutter_status[*data_recv] == 0 && *(data_recv+2) >= 80)
+	if(*data_recv != 1 && shutter_status[*data_recv] == 0)
         {
-		printf("Send message to %d.%d to close shutter because Light intensity = %dlux\n", *data_recv, *(data_recv+1), *(data_recv+2));
+		if(*(data_recv+2) == 1 ||  *(data_recv+3) == 1 || *(data_recv+4) == 1)
+		{
+		printf("Send message to %d.%d to close shutter\n", *data_recv, *(data_recv+1));
 		shutter_status[*data_recv] = 1;
 		//*(data_recv+2) = 1;
 		packetbuf_copyfrom(data_recv, sizeof(data_recv));
 	    	trickle_send(&trickle);
+		}
 	}
-	else if(*data_recv != 1 && shutter_status[*data_recv] == 1 && *(data_recv+2) < 80)
+	else if(*data_recv != 1 && shutter_status[*data_recv] == 1)
         {
-		printf("Send message to %d.%d to open shutter because Light intensity has reduced to %dlux\n", *data_recv, *(data_recv+1), *(data_recv+2));
+		if(*(data_recv+2) == 0 &&  *(data_recv+3) == 0 && *(data_recv+4) == 0)
+		{
+		printf("Send message to %d.%d to open shutter\n", *data_recv, *(data_recv+1));
 		shutter_status[*data_recv] = 0;
 		//*(data_recv+2) = 0;
 		packetbuf_copyfrom(data_recv, sizeof(data_recv));
 	    	trickle_send(&trickle);
+		}
 	}	
-	else if(*data_recv == 1 && shutter_status[1] == 0 && *(data_recv+2) >= 80) // close shutter at PAN
+
+
+	else if(*data_recv == 1 && shutter_status[1] == 0) // close shutter at PAN
 	{
-		printf("Close shutter at %d.%d\n",*data_recv, *(data_recv+1) && *(data_recv+2) >= 80);
+		if(*(data_recv+2) == 1 ||  *(data_recv+3) == 1 || *(data_recv+4) == 1)
+		{
+		printf("Close shutter at %d.%d\n",*data_recv, *(data_recv+1));
 		shutter_status[1] = 1;
+		}
 	}
-	else if(*data_recv == 1 && shutter_status[1] == 1 && *(data_recv+2) < 80) // open shutter at PAN
+	else if(*data_recv == 1 && shutter_status[1] == 1) // open shutter at PAN
 	{
+		if(*(data_recv+2) == 0 &&  *(data_recv+3) == 0 && *(data_recv+4) == 0)
+		{
 		printf("Open shutter at %d.%d\n",*data_recv, *(data_recv+1));
 		shutter_status[1] = 0;
+		}
 	}
     }
      PROCESS_END();
