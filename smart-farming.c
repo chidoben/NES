@@ -63,7 +63,7 @@ node_ID_recv = (int *)packetbuf_dataptr();
 	//certain threshold then print a message that says that the canopy for covering the crops has been activated.
 	//E.g if humidity.value > 100 => activate canopy
 	static int node_ID_trigger[] = {0,0,0,0,0};
-		if(*(node_ID_recv+2) >= 80 ||  *node_ID_recv >= 29 || *(node_ID_recv+1) >= 110)		//testing with light threshold = 80lux******change this value in "shutter_process" also
+		if(*(node_ID_recv+2) >= 80 ||  *node_ID_recv >= 29 || *(node_ID_recv+1) >= 100)		//testing with light threshold = 80lux******change this value in "shutter_process" also
 		{
 			node_ID_trigger[0] = originator->u8[0];
 			node_ID_trigger[1] = originator->u8[1];
@@ -74,7 +74,7 @@ node_ID_recv = (int *)packetbuf_dataptr();
 			event_data_ready = process_alloc_event();
 			process_post(&shutter_process, event_data_ready, node_ID_trigger);
 		}
-		else if((*(node_ID_recv+2) < 80 &&  *node_ID_recv < 29 && *(node_ID_recv+1) < 110) && shutter_array[originator->u8[0]] == 1)
+		else if((*(node_ID_recv+2) < 80 &&  *node_ID_recv < 29 && *(node_ID_recv+1) < 100) && shutter_array[originator->u8[0]] == 1)
 		{
 			node_ID_trigger[0] = originator->u8[0];
 			node_ID_trigger[1] = originator->u8[1];
